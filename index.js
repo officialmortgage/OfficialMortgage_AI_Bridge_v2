@@ -1,28 +1,36 @@
+// ========================
+//  Official Mortgage AI Bridge — Voice + Health API
+// ========================
+
 import express from "express";
-import fetch from "node-fetch";
 import dotenv from "dotenv";
+
+// Load environment variables (from .env or Render Environment tab)
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-app.use(express.urlencoded({ extended: true })); // Twilio form posts
+app.use(express.urlencoded({ extended: true })); // for Twilio form POSTs
 app.use(express.json());
 
-// 1) Root route (helps Render “Cannot GET /”)
+// ========== ROUTES ==========
+
+// 1️⃣ Root route — sanity check
 app.get("/", (req, res) => {
-  res.type("text").send("OfficialMortgage AI Bridge is live. Try /health or /tts?text=Hello");
+  res.type("text").send("✅ OfficialMortgage AI Bridge is live. Try /health or /tts?text=Hello");
 });
 
-// 2) Health route (Render/monitors)
+// 2️⃣ Health route — quick ping
 app.get("/health", (req, res) => {
   res.json({ ok: true, status: "AI Bridge is online" });
 });
 
-// 3) Text-to-speech demo route (GET) — returns MP3 from ElevenLabs
+// 3️⃣ Text-to-Speech route — ElevenLabs integration
 app.get("/tts", async (req, res) => {
   try {
     const text = (req.query.text || "Testing ElevenLabs").toString().slice(0, 500);
+
     const apiKey = sk_84581f04cb2d7e4144244199a384d488fe11a24fd84e4759;
     const voiceId = JH3fX8OSjg6sNdEtPjxr;
 
@@ -64,7 +72,9 @@ app.get("/tts", async (req, res) => {
   }
 });
 
+// ==============================
+// Start server
+// ==============================
 app.listen(PORT, () => {
-  console.log(`AI Bridge running on http://localhost:${PORT}`);
+  console.log(`✅ AI Bridge running on http://localhost:${PORT}`);
 });
-
