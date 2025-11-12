@@ -1,19 +1,23 @@
 {
-  "name": "officialmortgage_ai_bridge_v2",
-  "version": "1.0.0",
+  "name": "officialmortgage-ai-bridge-v2",
+  "version": "2.0.0",
+  "description": "AI Bridge backend for Twilio + ElevenLabs",
   "main": "index.js",
-  "private": true,
-  "scripts": {
-    "start": "node index.js"
+  "type": "commonjs",
+  "engines": {
+    "node": "20.x"
   },
-  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
   "dependencies": {
-    "express": "^4.19.2",
+    "axios": "^1.7.7",
     "body-parser": "^1.20.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
+    "express": "^4.19.2",
     "twilio": "^4.22.0",
-    "ws": "^8.18.0",
-    "axios": "^1.7.7"
+    "ws": "^8.18.0"
   }
 }
