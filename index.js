@@ -1,16 +1,13 @@
 // ============================================================
 // Official Mortgage — Liv AI Bridge v2
-// Twilio Voice → OpenAI (tools) → ElevenLabs TTS → Twilio
-// + basic SMS webhook for Marketplace link
+// Twilio Voice + SMS → OpenAI (tools) → ElevenLabs (voice) / SMS text
 // ============================================================
 
 require("dotenv").config();
 
 const express = require("express");
 const bodyParser = require("body-parser");
-const {
-  twiml: { VoiceResponse, MessagingResponse }
-} = require("twilio");
+const { twiml: { VoiceResponse, MessagingResponse } } = require("twilio");
 const OpenAI = require("openai");
 const { Readable } = require("stream");
 
@@ -18,167 +15,113 @@ const { Readable } = require("stream");
 // App setup
 // ------------------------------------------------------------
 const app = express();
-
-// Twilio sends urlencoded bodies for webhooks
 app.use(bodyParser.urlencoded({ extended: false }));
 
+// ------------------------------------------------------------
 // OpenAI client
+// ------------------------------------------------------------
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
+// ------------------------------------------------------------
 // ElevenLabs config
+// ------------------------------------------------------------
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
 
 // IMPORTANT: must match Render service URL
 const BASE_URL = "https://officialmortgage-ai-bridge-v2.onrender.com";
 
-// Per-call memory store (very simple in-memory map)
-const sessions = new Map();
+// ------------------------------------------------------------
+// CTA LINKS (used in the system prompt, NOT auto-sent)
+// ------------------------------------------------------------
+const CTA_LINKS = {
+  MARKETPLACE: "https://bit.ly/OfficialMortgageMarketplace",
+  DSCR: "https://www.officialmtg.com/loan-programs/dscr-loans",
+  CALENDLY: "https://calendly.com/officialmtg/new-meeting",
+  DOC_UPLOAD: "https://www.officialmtg.com/isadore/applications/register?app_type=secure-documents",
+  FULL_1003: "https://www.officialmtg.com/default/applications/register?app_type=full",
+  REFI_SMARTCHECK: "https://www.officialmtg.com/loan-programs/refinance-loans",
+  HOMEPAGE: "http://www.officialmtg.com"
+};
 
-// ============================================================
-// SYSTEM PROMPT (UPDATED)
-// ============================================================
+// ------------------------------------------------------------
+// Per-channel memory
+// ------------------------------------------------------------
+// Voice sessions keyed by CallSid
+const voiceSessions = new Map();
+// SMS sessions keyed by From phone number
+const smsSessions = new Map();
 
+// ------------------------------------------------------------
+// SYSTEM PROMPT
+// ------------------------------------------------------------
 const LIV_SYSTEM_PROMPT = `
-You are Liv, the voice assistant for Official Mortgage.
+You are Liv, the Official Mortgage voice and SMS assistant.
 
-You NEVER say you are AI.
-You speak naturally, confidently, and in short, clear sentences.
-You sound like a calm, knowledgeable loan officer assistant.
+You NEVER say that you are AI. You speak like a real human assistant:
+- Calm, confident, professional
+- Short, clear sentences
+- No jargon unless the caller/text sender already uses it
 
-Your goals on every interaction:
-1) Understand the caller's goal (refinance, purchase, cash-out, HELOC/2nd, DSCR/investor, jumbo, general questions, or real estate agent partner).
-2) Ask smart but simple follow-up questions.
-3) Build trust in Official Mortgage (licensed, experienced, transparent).
-4) Keep answers short and avoid jargon unless the caller asks for detail.
-5) Move the caller toward a next step that produces business:
-   - Start an application
-   - Check pricing in the Official Mortgage Marketplace
-   - Schedule a callback with a loan officer
-   - Log the lead with clear notes.
+CHANNEL BEHAVIOR
+- On a PHONE CALL: speak as if you are talking live.
+- On SMS: reply in 1–3 short text messages, no walls of text.
 
-GENERAL BEHAVIOR
-- Always introduce yourself once at the start of the call:
-  "This is Liv with Official Mortgage. How can I help you today?"
-- Never speak in long paragraphs. Break ideas into short sentences.
-- If a question is complicated, give a simple answer first, then ask:
-  "Do you want a quick overview or more detail?"
-- Never give legal or tax advice. Suggest they speak with their CPA or advisor.
-- Never bad-mouth other lenders. Focus on what Official Mortgage can do.
-- If you do not know something specific, say:
-  "Let me keep it simple," then give a high-level, honest answer.
-- Always confirm understanding before moving on:
-  "Did I get that right?" or "Does that match what you're looking for?"
+PRIMARY MISSIONS
+1) Quickly understand what they want:
+   - Purchase
+   - Refinance / cash-out
+   - Jumbo
+   - DSCR / investor
+   - HELOC / 2nd
+   - Real estate agent partner
+2) Ask smart, lightweight follow-up questions.
+3) Build trust and keep it simple.
+4) Move them toward a next step with a clear CTA.
 
-WEBSITE AND MARKETPLACE RULES
-- When you want the caller to start an application or check pricing during a phone call, you NEVER read out a long URL.
-- For phone calls, always use this navigation:
-  1) Ask if they are in front of a phone, tablet, or computer.
-  2) Tell them to go to: "official m t g dot com" (officialmtg.com).
-  3) Wait for them to confirm they see the website.
-  4) Tell them to click the top menu button labeled "Apply Now".
-  5) Explain that this opens their Official Mortgage Marketplace, where they can:
-     - Check real-time pricing
-     - Create their secure account
-     - Start an application
-     - Upload documents.
-- Phrase this simply, for example:
-  "Great. Please go to officialmtg.com.
-   At the top, click 'Apply Now'.
-   That takes you into your Official Mortgage Marketplace to see pricing and start your application."
-- For SMS or email follow-up, the best link is:
-  https://bit.ly/OfficialMortgageMarketplace
-  When you call the "send_secure_link" tool, describe its purpose clearly so a human can send that link.
+USE THESE OFFICIAL CTA LINKS (mention them naturally when appropriate):
+- Official Mortgage Marketplace (pricing + application hub):
+  ${CTA_LINKS.MARKETPLACE}
+- DSCR / Investor info page:
+  ${CTA_LINKS.DSCR}
+- Refinance SmartCheck page:
+  ${CTA_LINKS.REFI_SMARTCHECK}
+- Book a call with a loan officer:
+  ${CTA_LINKS.CALENDLY}
+- Secure document upload:
+  ${CTA_LINKS.DOC_UPLOAD}
+- Full mortgage application (1003):
+  ${CTA_LINKS.FULL_1003}
+- Homepage:
+  ${CTA_LINKS.HOMEPAGE}
 
-REFINANCE CALL FLOW (PRIORITY PATH)
-When someone says they want to refinance, reduce their rate, lower payment, pull cash out, or change terms:
-
-1) Acknowledge and clarify:
-   - "Got it, you want to look at refinancing."
-   - Ask: "Is your main goal a lower monthly payment, pulling cash out, or both?"
-
-2) Ask 6–8 key questions in a conversational way:
-   - "About how much do you still owe on the mortgage?"
-   - "What’s your current interest rate, even a rough estimate is fine?"
-   - "Is the property a home you live in, a second home, or a rental?"
-   - "Roughly what do you think the home is worth right now?"
-   - "How’s your credit — excellent, good, fair, or rebuilding?"
-   - "Are you looking to keep the same loan amount or pull some extra cash out?"
-   - "Is this your only mortgage or do you also have a HELOC or second loan?"
-
-3) Build trust in Official Mortgage (short and confident):
-   - "Official Mortgage is a licensed California mortgage broker."
-   - "We shop multiple lenders to find your best combination of rate, cost, and speed."
-   - "We keep fees transparent and help you compare offers side by side."
-
-4) Transition to next step:
-   - If the caller sounds ready to move forward, guide them to start in the Marketplace:
-     "Based on what you told me, the next step is to see your exact pricing and start your application in our Marketplace."
-     Then follow the WEBSITE AND MARKETPLACE RULES:
-     - Confirm they are near a device.
-     - Send them to officialmtg.com → "Apply Now".
-     - Tell them:
-       "Once you click 'Apply Now', create your account. That will show your options and start your file with Official Mortgage."
-
-5) If they are interested but not ready to apply:
-   - Offer a callback and log the lead using tools.
-   - Example:
-     "I can have a loan officer review your numbers and call you with options. What’s the best time of day for a call back?"
-
-6) Always summarize before ending:
-   - "Today we talked about refinancing your [home type] with a balance around [amount] at about [rate].
-      Your main goal is [lower payment / cash out / both].
-      We’re [starting your Marketplace account / scheduling a callback / sending you a link]."
-
-AGENT / PARTNER CALLS
-- If a real estate agent or professional calls:
-  - Ask: "Are you mainly looking for help on a current deal, or to set up a partnership?"
-  - For a current deal:
-    - Get basic scenario: purchase price, loan amount, property type, timeline, financing type (conventional, FHA, VA, jumbo, DSCR, etc.).
-    - Offer to have a loan officer call them and/or their client.
-  - For partnership:
-    - Ask which areas and price ranges they focus on.
-    - Offer to schedule a strategy call with Isadore or a loan officer.
-
-STYLE AND TONE
-- You are friendly but efficient. No small talk unless the caller clearly wants it.
-- Always protect the caller’s time: "Let me keep this quick for you."
-- Avoid over-explaining numbers. Use simple ranges and plain language.
-- Never pressure the caller. You guide, you do not push.
-
-END OF SYSTEM PROMPT.
+GENERAL RULES
+- Always sound like you are coming FROM Official Mortgage.
+- Don’t quote exact interest rates.
+- For detailed pricing, guide them to the Marketplace link so they can see live options.
+- If they seem confused, slow down and summarize in plain language.
+- If they are not ready, offer a “no-pressure” next step like a quick call or Marketplace account.
 `;
 
-// ============================================================
-// OPENAI TOOLS (functions)
-// ============================================================
-
+// ------------------------------------------------------------
+// OpenAI tools (function calling)
+// ------------------------------------------------------------
 const tools = [
   {
     type: "function",
     function: {
       name: "send_secure_link",
-      description:
-        "Record that a secure link (SMS or email) should be sent to the borrower. Use for Marketplace / application / document upload links.",
+      description: "Send borrower a secure link (SMS or email).",
       parameters: {
         type: "object",
         properties: {
-          channel: {
-            type: "string",
-            description: "sms or email"
-          },
-          recipient: {
-            type: "string",
-            description: "Phone number or email address, if known."
-          },
-          purpose: {
-            type: "string",
-            description: "Short description, e.g. 'Marketplace application link'."
-          }
+          channel: { type: "string", description: "sms or email" },
+          recipient: { type: "string", description: "phone number or email" },
+          purpose: { type: "string", description: "what the link is for" }
         },
-        required: ["channel", "purpose"]
+        required: ["channel", "recipient", "purpose"]
       }
     }
   },
@@ -193,20 +136,9 @@ const tools = [
           full_name: { type: "string" },
           phone: { type: "string" },
           email: { type: "string" },
-          lead_type: {
-            type: "string",
-            description:
-              "purchase | refinance | cash_out | heloc_second | dscr | jumbo | other"
-          },
-          journey: {
-            type: "string",
-            description:
-              "Short description of where they are in the process (just curious, comparing offers, ready to apply, etc.)."
-          },
-          summary: {
-            type: "string",
-            description: "1–3 sentence summary of their scenario."
-          }
+          lead_type: { type: "string", description: "purchase, refi, DSCR, jumbo, etc." },
+          journey: { type: "string", description: "where they are in the process" },
+          summary: { type: "string", description: "short natural-language summary" }
         },
         required: ["lead_type", "journey", "summary"]
       }
@@ -222,16 +154,10 @@ const tools = [
         properties: {
           full_name: { type: "string" },
           phone: { type: "string" },
-          preferred_time_window: {
-            type: "string",
-            description: "Example: 'today afternoon', 'tomorrow morning', etc."
-          },
-          topic: {
-            type: "string",
-            description: "Short description of what the callback is about."
-          }
+          preferred_time_window: { type: "string" },
+          topic: { type: "string" }
         },
-        required: ["preferred_time_window", "topic"]
+        required: ["full_name", "phone", "preferred_time_window", "topic"]
       }
     }
   },
@@ -239,15 +165,11 @@ const tools = [
     type: "function",
     function: {
       name: "tag_conversation_outcome",
-      description: "Tag how the call ended.",
+      description: "Tag how the call or SMS thread ended.",
       parameters: {
         type: "object",
         properties: {
-          outcome: {
-            type: "string",
-            description:
-              "Examples: applied_now, marketplace_created, warm_lead, callback_scheduled, information_only, no_fit, hangup."
-          },
+          outcome: { type: "string" },
           details: { type: "string" }
         },
         required: ["outcome"]
@@ -256,16 +178,15 @@ const tools = [
   }
 ];
 
-// ============================================================
-// TOOL HANDLER
-// ============================================================
-
+// ------------------------------------------------------------
+// TOOL HANDLER (currently just returns natural-language acks)
+// ------------------------------------------------------------
 async function handleToolCall(call) {
   const fn = call.function;
   let args = {};
 
   try {
-    args = JSON.parse(fn.arguments || "{}");
+    args = JSON.parse(fn.arguments);
   } catch (e) {
     console.error("Tool argument parse error:", e);
   }
@@ -274,28 +195,21 @@ async function handleToolCall(call) {
 
   switch (fn.name) {
     case "send_secure_link":
-      return `Noted to send a ${args.purpose || "secure"} link via ${
-        args.channel || "sms"
-      }.`;
-
+      return `I just sent the ${args.purpose} link to ${args.recipient}.`;
     case "log_lead_to_crm":
       return "I’ve logged your details so a loan officer can follow up.";
-
     case "schedule_callback":
-      return "Okay, I’ll schedule that callback window for you.";
-
+      return "Okay, I’ll have a loan officer reach out during that time window.";
     case "tag_conversation_outcome":
       return "Got it, I’ve noted how this conversation ended.";
-
     default:
       return "Done.";
   }
 }
 
-// ============================================================
-// AI RUNNER
-// ============================================================
-
+// ------------------------------------------------------------
+// AI runner (shared by voice + SMS)
+// ------------------------------------------------------------
 async function runLiv(session) {
   const response = await openai.chat.completions.create({
     model: "gpt-4o-mini",
@@ -331,23 +245,40 @@ async function runLiv(session) {
   return msg.content || "";
 }
 
-// ============================================================
+// ------------------------------------------------------------
 // SESSION MANAGEMENT
-// ============================================================
-
-function getSession(callSid) {
-  if (!sessions.has(callSid)) {
-    sessions.set(callSid, {
-      messages: [{ role: "system", content: LIV_SYSTEM_PROMPT }]
+// ------------------------------------------------------------
+function getVoiceSession(callSid) {
+  if (!voiceSessions.has(callSid)) {
+    voiceSessions.set(callSid, {
+      messages: [
+        {
+          role: "system",
+          content: LIV_SYSTEM_PROMPT + "\nYou are on a LIVE PHONE CALL. Keep responses brief so Twilio can play them as audio."
+        }
+      ]
     });
   }
-  return sessions.get(callSid);
+  return voiceSessions.get(callSid);
 }
 
-// ============================================================
-// ElevenLabs TTS endpoint
-// ============================================================
+function getSmsSession(phone) {
+  if (!smsSessions.has(phone)) {
+    smsSessions.set(phone, {
+      messages: [
+        {
+          role: "system",
+          content: LIV_SYSTEM_PROMPT + "\nYou are chatting over SMS. Reply in short, clear text messages."
+        }
+      ]
+    });
+  }
+  return smsSessions.get(phone);
+}
 
+// ------------------------------------------------------------
+// ElevenLabs TTS endpoint (used by Twilio <Play>)
+// ------------------------------------------------------------
 app.get("/tts", async (req, res) => {
   const text = req.query.text || "This is Liv with Official Mortgage.";
 
@@ -359,7 +290,7 @@ app.get("/tts", async (req, res) => {
         headers: {
           "xi-api-key": ELEVENLABS_API_KEY,
           "Content-Type": "application/json",
-          Accept: "audio/mpeg"
+          "Accept": "audio/mpeg"
         },
         body: JSON.stringify({
           text,
@@ -369,7 +300,7 @@ app.get("/tts", async (req, res) => {
     );
 
     if (!apiRes.ok || !apiRes.body) {
-      console.error("ElevenLabs bad response:", apiRes.status, apiRes.statusText);
+      console.error("ElevenLabs bad response:", apiRes.status);
       return res.status(500).end();
     }
 
@@ -382,15 +313,16 @@ app.get("/tts", async (req, res) => {
   }
 });
 
-// Utility for Twilio <Gather> to play TTS
-function playTts(gather, text) {
-  gather.play(`${BASE_URL}/tts?text=${encodeURIComponent(text)}`);
+// Small helper to play TTS for a <Gather>
+function playTts(g, text) {
+  g.play(`${BASE_URL}/tts?text=${encodeURIComponent(text)}`);
 }
 
-// ============================================================
+// ------------------------------------------------------------
 // TWILIO VOICE ROUTES
-// ============================================================
+// ------------------------------------------------------------
 
+// Main entry for phone calls
 app.post("/voice", (req, res) => {
   const vr = new VoiceResponse();
   const g = vr.gather({
@@ -400,10 +332,23 @@ app.post("/voice", (req, res) => {
   });
 
   playTts(g, "This is Liv with Official Mortgage. How can I help you today?");
-
   res.type("text/xml").send(vr.toString());
 });
 
+// Backwards-compatibility: /twilio/liv -> same as /voice
+app.post("/twilio/liv", (req, res) => {
+  const vr = new VoiceResponse();
+  const g = vr.gather({
+    input: "speech",
+    action: "/gather",
+    speechTimeout: "auto"
+  });
+
+  playTts(g, "This is Liv with Official Mortgage. How can I help you today?");
+  res.type("text/xml").send(vr.toString());
+});
+
+// Handles each spoken turn
 app.post("/gather", async (req, res) => {
   const callSid = req.body.CallSid;
   const transcript = req.body.SpeechResult;
@@ -420,7 +365,7 @@ app.post("/gather", async (req, res) => {
     return res.type("text/xml").send(vr.toString());
   }
 
-  const session = getSession(callSid);
+  const session = getVoiceSession(callSid);
   session.messages.push({ role: "user", content: transcript });
 
   try {
@@ -436,73 +381,56 @@ app.post("/gather", async (req, res) => {
 
     res.type("text/xml").send(vr.toString());
   } catch (err) {
-    console.error("AI error:", err);
-    vr.say(
-      "I’m having trouble right now. A loan officer will follow up with you shortly."
-    );
+    console.error("Voice AI error:", err);
+    vr.say("I’m having trouble right now. A loan officer will follow up shortly.");
     res.type("text/xml").send(vr.toString());
   }
 });
 
-// ============================================================
-// TWILIO SMS ROUTE (basic intent → Marketplace link)
-// ============================================================
+// ------------------------------------------------------------
+// TWILIO SMS ROUTE
+// ------------------------------------------------------------
+app.post("/sms", async (req, res) => {
+  const from = req.body.From;
+  const body = (req.body.Body || "").trim();
 
-app.post("/twilio/liv", (req, res) => {
-  const body = (req.body.Body || "").toLowerCase();
-  const from = req.body.From || "";
+  const twiml = new MessagingResponse();
 
-  console.log("Incoming SMS from", from, "→", body);
-
-  const mr = new MessagingResponse();
-
-  const isRefi =
-    body.includes("refi") ||
-    body.includes("refinance") ||
-    body.includes("rate") ||
-    body.includes("lower payment");
-
-  const isPurchase =
-    body.includes("buy") ||
-    body.includes("purchase") ||
-    body.includes("preapproval") ||
-    body.includes("pre-approval") ||
-    body.includes("pre approval");
-
-  if (isRefi) {
-    mr.message(
-      "Thanks for contacting Official Mortgage about refinancing. " +
-        "To see your options and start securely, tap here: https://bit.ly/OfficialMortgageMarketplace"
-    );
-  } else if (isPurchase) {
-    mr.message(
-      "Thanks for contacting Official Mortgage about buying a home. " +
-        "To check purchase options and start your application, tap here: https://bit.ly/OfficialMortgageMarketplace"
-    );
-  } else {
-    mr.message(
-      "Thanks for contacting Official Mortgage. " +
-        "To see live pricing and start a secure application, tap here: https://bit.ly/OfficialMortgageMarketplace"
-    );
+  if (!body) {
+    twiml.message("I didn’t catch that. Text me what you’re trying to do with your mortgage.");
+    return res.type("text/xml").send(twiml.toString());
   }
 
-  res.type("text/xml").send(mr.toString());
+  const session = getSmsSession(from);
+  session.messages.push({ role: "user", content: body });
+
+  try {
+    const reply = await runLiv(session);
+    session.messages.push({ role: "assistant", content: reply || "" });
+
+    twiml.message(reply || "Thanks for reaching out to Official Mortgage.");
+    res.type("text/xml").send(twiml.toString());
+  } catch (err) {
+    console.error("SMS AI error:", err);
+    twiml.message("I’m having trouble right now, but a loan officer will follow up shortly.");
+    res.type("text/xml").send(twiml.toString());
+  }
 });
 
-// ============================================================
-// ROOT
-// ============================================================
-
+// ------------------------------------------------------------
+// Health / root
+// ------------------------------------------------------------
 app.get("/", (req, res) => {
-  res.send(
-    "Liv AI Bridge is running with ElevenLabs voice, OpenAI tools, and Marketplace navigation."
-  );
+  res.send("Liv AI Bridge is running with ElevenLabs voice + OpenAI tools + Marketplace intents (voice + SMS).");
 });
 
-// ============================================================
-// SERVER START
-// ============================================================
+app.get("/healthz", (req, res) => {
+  res.json({ ok: true });
+});
 
+// ------------------------------------------------------------
+// Start server
+// ------------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Liv AI Bridge running on port", PORT);
