@@ -7,7 +7,9 @@ require("dotenv").config();
 
 const express = require("express");
 const bodyParser = require("body-parser");
-const { twiml: { VoiceResponse } } = require("twilio");
+const {
+  twiml: { VoiceResponse },
+} = require("twilio");
 const OpenAI = require("openai");
 const { Readable } = require("stream");
 
@@ -17,7 +19,7 @@ app.use(bodyParser.urlencoded({ extended: false }));
 
 // OpenAI client
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 // ElevenLabs config
@@ -51,73 +53,81 @@ PRIMARY MISSIONS:
 `;
 
 // ============================================================
-// TOOLS (OpenAI v2 format: type: "function")
+// TOOLS (OpenAI v2 format: type: "function" + function:{...})
 // ============================================================
 
 const tools = [
   {
     type: "function",
-    name: "send_secure_link",
-    description: "Send borrower a secure link (SMS or email).",
-    parameters: {
-      type: "object",
-      properties: {
-        channel: { type: "string" },
-        recipient: { type: "string" },
-        purpose: { type: "string" }
+    function: {
+      name: "send_secure_link",
+      description: "Send borrower a secure link (SMS or email).",
+      parameters: {
+        type: "object",
+        properties: {
+          channel: { type: "string" },
+          recipient: { type: "string" },
+          purpose: { type: "string" },
+        },
+        required: ["channel", "recipient", "purpose"],
       },
-      required: ["channel", "recipient", "purpose"]
-    }
+    },
   },
   {
     type: "function",
-    name: "log_lead_to_crm",
-    description: "Log borrower lead details for follow-up.",
-    parameters: {
-      type: "object",
-      properties: {
-        full_name: { type: "string" },
-        phone: { type: "string" },
-        email: { type: "string" },
-        lead_type: { type: "string" },
-        journey: { type: "string" },
-        summary: { type: "string" }
+    function: {
+      name: "log_lead_to_crm",
+      description: "Log borrower lead details for follow-up.",
+      parameters: {
+        type: "object",
+        properties: {
+          full_name: { type: "string" },
+          phone: { type: "string" },
+          email: { type: "string" },
+          lead_type: { type: "string" },
+          journey: { type: "string" },
+          summary: { type: "string" },
+        },
+        required: ["lead_type", "journey", "summary"],
       },
-      required: ["lead_type", "journey", "summary"]
-    }
+    },
   },
   {
     type: "function",
-    name: "schedule_callback",
-    description: "Schedule a callback with a loan officer.",
-    parameters: {
-      type: "object",
-      properties: {
-        full_name: { type: "string" },
-        phone: { type: "string" },
-        preferred_time_window: { type: "string" },
-        topic: { type: "string" }
+    function: {
+      name: "schedule_callback",
+      description: "Schedule a callback with a loan officer.",
+      parameters: {
+        type: "object",
+        properties: {
+          full_name: { type: "string" },
+          phone: { type: "string" },
+          preferred_time_window: { type: "string" },
+          topic: { type: "string" },
+        },
+        required: ["full_name", "phone", "preferred_time_window", "topic"],
       },
-      required: ["full_name", "phone", "preferred_time_window", "topic"]
-    }
+    },
   },
   {
     type: "function",
-    name: "tag_conversation_outcome",
-    description: "Tag how the call ended.",
-    parameters: {
-      type: "object",
-      properties: {
-        outcome: { type: "string" },
-        details: { type: "string" }
+    function: {
+      name: "tag_conversation_outcome",
+      description: "Tag how the call ended.",
+      parameters: {
+        type: "object",
+        properties: {
+          outcome: { type: "string" },
+          details: { type: "string" },
+        },
+        required: ["outcome"],
       },
-      required: ["outcome"]
-    }
-  }
+    },
+  },
 ];
 
 // ============================================================
-// TOOL HANDLER (currently just returns natural-language summaries)
+// TOOL HANDLER (natural-language summaries only for now)
 // ============================================================
 
 async function handleToolCall(toolCall) {
@@ -155,12 +165,11 @@ async function runLiv(session) {
     model: "gpt-4o-mini",
     messages: session.messages,
     tools,
-    tool_choice: "auto"
+    tool_choice: "auto",
   });
 
   const msg = response.choices[0].message;
 
-  // Tool calls
   if (msg.tool_calls?.length) {
     session.messages.push({ role: "assistant", tool_calls: msg.tool_calls });
 
@@ -169,14 +178,13 @@ async function runLiv(session) {
       session.messages.push({
         role: "tool",
         name: call.function.name,
-        content: result
+        content: result,
       });
     }
 
-    // Re-run after tools
     const second = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: session.messages
+      messages: session.messages,
     });
 
     return second.choices[0].message.content || "";
@@ -192,9 +200,7 @@ async function runLiv(session) {
 function getSession(callSid) {
   if (!sessions.has(callSid)) {
     sessions.set(callSid, {
-      messages: [
-        { role: "system", content: LIV_SYSTEM_PROMPT }
-      ]
+      messages: [{ role: "system", content: LIV_SYSTEM_PROMPT }],
     });
   }
   return sessions.get(callSid);
@@ -220,21 +226,25 @@ app.get("/tts", async (req, res) => {
         headers: {
           "xi-api-key": ELEVENLABS_API_KEY,
           "Content-Type": "application/json",
-          "Accept": "audio/mpeg"
+          Accept: "audio/mpeg",
         },
         body: JSON.stringify({
           text,
           model_id: "eleven_multilingual_v2",
           voice_settings: {
             stability: 0.5,
-            similarity_boost: 0.8
-          }
-        })
+            similarity_boost: 0.8,
+          },
+        }),
       }
     );
 
     if (!apiRes.ok || !apiRes.body) {
-      console.error("ElevenLabs TTS HTTP error:", apiRes.status, await apiRes.text());
+      console.error(
+        "ElevenLabs TTS HTTP error:",
+        apiRes.status,
+        await apiRes.text()
+      );
       return res.status(500).end();
     }
 
@@ -261,12 +271,13 @@ function playTtsInGather(gather, text) {
 app.post("/voice", (req, res) => {
   const vr = new VoiceResponse();
 
-  const greeting = "This is Liv with Official Mortgage. How can I help you today?";
+  const greeting =
+    "This is Liv with Official Mortgage. How can I help you today?";
 
   const gather = vr.gather({
     input: "speech",
     action: "/gather",
-    speechTimeout: "auto"
+    speechTimeout: "auto",
   });
 
   playTtsInGather(gather, greeting);
@@ -288,7 +299,7 @@ app.post("/gather", async (req, res) => {
     const g = vr.gather({
       input: "speech",
       action: "/gather",
-      speechTimeout: "auto"
+      speechTimeout: "auto",
     });
     playTtsInGather(g, "I didn't catch that. Could you repeat it?");
     return res.type("text/xml").send(vr.toString());
@@ -304,7 +315,7 @@ app.post("/gather", async (req, res) => {
     const g = vr.gather({
       input: "speech",
       action: "/gather",
-      speechTimeout: "auto"
+      speechTimeout: "auto",
     });
 
     playTtsInGather(g, reply);
@@ -313,7 +324,6 @@ app.post("/gather", async (req, res) => {
   } catch (err) {
     console.error("AI error:", err);
 
-    // Simple fallback if OpenAI or ElevenLabs fail
     vr.say(
       "I'm having trouble right now. A loan officer will follow up shortly."
     );
