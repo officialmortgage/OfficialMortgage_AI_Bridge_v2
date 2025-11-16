@@ -1,6 +1,7 @@
 // ============================================================
-// Official Mortgage — Liv AI Bridge v2
-// Twilio Voice  → OpenAI STT/LLM → TTS → Twilio
+// Official Mortgage — Liv AI Bridge v2 (Final multi-route version)
+// Twilio Voice → OpenAI STT/LLM → TTS → Twilio
+// Supports both /voice and /twilio/voice (and /gather variants)
 // ============================================================
 
 require("dotenv").config();
@@ -8,7 +9,7 @@ require("dotenv").config();
 const express = require("express");
 const bodyParser = require("body-parser");
 const {
-  twiml: { VoiceResponse }
+  twiml: { VoiceResponse },
 } = require("twilio");
 const OpenAI = require("openai");
 
@@ -18,7 +19,7 @@ app.use(bodyParser.urlencoded({ extended: false }));
 
 // OpenAI client
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 // Per-call memory store
@@ -83,10 +84,10 @@ const tools = [
         recipient: { type: "string" },
         purpose: { type: "string" },
         borrower_name: { type: "string" },
-        notes: { type: "string" }
+        notes: { type: "string" },
       },
-      required: ["channel", "recipient", "purpose"]
-    }
+      required: ["channel", "recipient", "purpose"],
+    },
   },
   {
     name: "log_lead_to_crm",
@@ -102,10 +103,10 @@ const tools = [
         source: { type: "string" },
         urgency: { type: "string" },
         summary: { type: "string" },
-        notes_for_officer: { type: "string" }
+        notes_for_officer: { type: "string" },
       },
-      required: ["lead_type", "journey", "summary"]
-    }
+      required: ["lead_type", "journey", "summary"],
+    },
   },
   {
     name: "schedule_callback",
@@ -118,10 +119,10 @@ const tools = [
         preferred_time_window: { type: "string" },
         timezone: { type: "string" },
         topic: { type: "string" },
-        priority: { type: "string" }
+        priority: { type: "string" },
       },
-      required: ["full_name", "phone", "preferred_time_window", "topic", "priority"]
-    }
+      required: ["full_name", "phone", "preferred_time_window", "topic", "priority"],
+    },
   },
   {
     name: "tag_conversation_outcome",
@@ -130,10 +131,10 @@ const tools = [
       type: "object",
       properties: {
         outcome: { type: "string" },
-        details: { type: "string" }
+        details: { type: "string" },
       },
-      required: ["outcome"]
-    }
+      required: ["outcome"],
+    },
   },
   {
     name: "escalate_to_human",
@@ -142,11 +143,11 @@ const tools = [
       type: "object",
       properties: {
         reason: { type: "string" },
-        severity: { type: "string" }
+        severity: { type: "string" },
       },
-      required: ["reason", "severity"]
-    }
-  }
+      required: ["reason", "severity"],
+    },
+  },
 ];
 
 // ============================================================
@@ -169,15 +170,15 @@ async function handleToolCall(toolCall) {
   // Placeholder responses (safe for production, real services optional)
   switch (name) {
     case "send_secure_link":
-      return `The secure ${args.purpose} link was sent to ${args.recipient}.`;
+      return `The secure ${args.purpose || "mortgage"} link was sent to ${args.recipient || "the borrower"}.`;
     case "log_lead_to_crm":
       return "Lead logged successfully.";
     case "schedule_callback":
-      return `Callback scheduled for ${args.preferred_time_window}.`;
+      return `Callback scheduled for ${args.preferred_time_window || "the requested time window"}.`;
     case "tag_conversation_outcome":
-      return `Outcome recorded: ${args.outcome}.`;
+      return `Outcome recorded: ${args.outcome || "unspecified"}.`;
     case "escalate_to_human":
-      return `A human loan officer will follow up.`;
+      return "A human loan officer will follow up.";
     default:
       return "Tool executed.";
   }
@@ -192,13 +193,13 @@ async function runLiv(session) {
     model: "gpt-5.1-mini",
     messages: session.messages,
     tools,
-    tool_choice: "auto"
+    tool_choice: "auto",
   });
 
   const msg = response.choices[0].message;
 
   // If tool calls detected
-  if (msg.tool_calls?.length) {
+  if (msg.tool_calls && msg.tool_calls.length > 0) {
     session.messages.push({ role: "assistant", tool_calls: msg.tool_calls });
 
     for (const call of msg.tool_calls) {
@@ -206,14 +207,14 @@ async function runLiv(session) {
       session.messages.push({
         role: "tool",
         name: call.function.name,
-        content: result
+        content: result,
       });
     }
 
     // Re-run after tools
     const second = await openai.chat.completions.create({
       model: "gpt-5.1-mini",
-      messages: session.messages
+      messages: session.messages,
     });
 
     return second.choices[0].message.content || "";
@@ -229,23 +230,25 @@ async function runLiv(session) {
 function getSession(callSid) {
   if (!sessions.has(callSid)) {
     sessions.set(callSid, {
-      messages: [{ role: "system", content: LIV_SYSTEM_PROMPT }]
+      messages: [{ role: "system", content: LIV_SYSTEM_PROMPT }],
     });
   }
   return sessions.get(callSid);
 }
 
 // ============================================================
-// 6. TWILIO ROUTE HANDLERS
+// 6. TWILIO HANDLERS (shared)
 // ============================================================
 
-function voiceHandler(req, res) {
+function handleVoice(req, res) {
+  console.log("Incoming /voice webhook");
+
   const vr = new VoiceResponse();
 
   const gather = vr.gather({
     input: "speech",
     action: "/gather",
-    speechTimeout: "auto"
+    speechTimeout: "auto",
   });
 
   gather.say(
@@ -256,24 +259,26 @@ function voiceHandler(req, res) {
   res.type("text/xml").send(vr.toString());
 }
 
-async function gatherHandler(req, res) {
+async function handleGather(req, res) {
+  console.log("Incoming /gather webhook");
+
   const callSid = req.body.CallSid;
   const transcript = req.body.SpeechResult;
 
   const vr = new VoiceResponse();
 
   if (!transcript) {
+    console.log("No SpeechResult received");
     const g = vr.gather({
       input: "speech",
       action: "/gather",
-      speechTimeout: "auto"
+      speechTimeout: "auto",
     });
-    g.say(
-      { voice: "Polly.Joanna" },
-      "I didn't catch that. Could you repeat it?"
-    );
+    g.say({ voice: "Polly.Joanna" }, "I didn't catch that. Could you repeat it?");
     return res.type("text/xml").send(vr.toString());
   }
+
+  console.log(`Caller said: ${transcript}`);
 
   const session = getSession(callSid);
   session.messages.push({ role: "user", content: transcript });
@@ -282,10 +287,12 @@ async function gatherHandler(req, res) {
     const reply = await runLiv(session);
     session.messages.push({ role: "assistant", content: reply });
 
+    console.log(`Liv reply: ${reply}`);
+
     const g = vr.gather({
       input: "speech",
       action: "/gather",
-      speechTimeout: "auto"
+      speechTimeout: "auto",
     });
 
     g.say({ voice: "Polly.Joanna" }, reply);
@@ -303,20 +310,24 @@ async function gatherHandler(req, res) {
 }
 
 // ============================================================
-// 7. TWILIO ROUTES (base + /twilio/* aliases)
+// 7. ROUTES (support both /voice and /twilio/voice)
 // ============================================================
 
-// Voice entrypoint
-app.post("/voice", voiceHandler);
-app.post("/twilio/voice", voiceHandler); // for URL: /twilio/voice
+// Primary routes
+app.post("/voice", handleVoice);
+app.post("/gather", handleGather);
 
-// Speech gather
-app.post("/gather", gatherHandler);
-app.post("/twilio/gather", gatherHandler); // safe alias if ever used
+// Backwards-compatible routes (if Twilio is still pointed at /twilio/voice)
+app.post("/twilio/voice", handleVoice);
+app.post("/twilio/gather", handleGather);
 
-// Root
+// Health + root
+app.get("/health", (req, res) => {
+  res.json({ status: "ok", service: "Liv AI Bridge v2" });
+});
+
 app.get("/", (req, res) => {
-  res.send("Liv AI Bridge is running.");
+  res.send("Liv AI Bridge is running. Try /health.");
 });
 
 // ============================================================
