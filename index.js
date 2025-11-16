@@ -1,13 +1,15 @@
 // ============================================================
 // Official Mortgage — Liv AI Bridge v2 (Stable Fixed Build)
-// Twilio Voice → OpenAI STT/LLM (with tools) → TTS → Twilio
+// Twilio Voice → OpenAI LLM (with tools) → TTS → Twilio
 // ============================================================
 
 require("dotenv").config();
 
 const express = require("express");
 const bodyParser = require("body-parser");
-const { twiml: { VoiceResponse } } = require("twilio");
+const {
+  twiml: { VoiceResponse },
+} = require("twilio");
 const OpenAI = require("openai");
 
 // App setup
@@ -16,13 +18,16 @@ app.use(bodyParser.urlencoded({ extended: false }));
 
 // OpenAI client
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Session store
+// Session store (per CallSid)
 const sessions = new Map();
 
+// ============================================================
 // SYSTEM PROMPT
+// ============================================================
+
 const LIV_SYSTEM_PROMPT = `
 You are Liv, the Official Mortgage voice assistant.
 You never say you are AI. You speak naturally, confidently,
@@ -32,77 +37,85 @@ INTRO:
 “This is Liv with Official Mortgage. How can I help you today?”
 
 PRIMARY MISSIONS:
-1. Understand caller goal.
+1. Understand caller goal (purchase, refi, DSCR, jumbo, agent partner, etc.).
 2. Ask smart follow-up questions.
-3. Build trust.
-4. Short answers.
-5. Move caller forward (app link, pricing link, callback, etc.)
+3. Build trust using brief reflections, not long speeches.
+4. Keep answers short and focused.
+5. Move the caller forward (application link, pricing link, callback, etc.).
 `;
 
 // ============================================================
-// TOOLS — NOW WITH type:"function" (required by OpenAI v2)
+// TOOLS — correct OpenAI format (type + function object)
 // ============================================================
 
 const tools = [
   {
     type: "function",
-    name: "send_secure_link",
-    description: "Send borrower a secure link",
-    parameters: {
-      type: "object",
-      properties: {
-        channel: { type: "string" },
-        recipient: { type: "string" },
-        purpose: { type: "string" }
+    function: {
+      name: "send_secure_link",
+      description: "Send borrower a secure link via SMS or email",
+      parameters: {
+        type: "object",
+        properties: {
+          channel: { type: "string" }, // sms, email, etc.
+          recipient: { type: "string" },
+          purpose: { type: "string" }, // app_link, pricing_link, docs_link, etc.
+        },
+        required: ["channel", "recipient", "purpose"],
       },
-      required: ["channel", "recipient", "purpose"]
-    }
+    },
   },
   {
     type: "function",
-    name: "log_lead_to_crm",
-    description: "Log borrower lead",
-    parameters: {
-      type: "object",
-      properties: {
-        full_name: { type: "string" },
-        phone: { type: "string" },
-        email: { type: "string" },
-        lead_type: { type: "string" },
-        journey: { type: "string" },
-        summary: { type: "string" }
+    function: {
+      name: "log_lead_to_crm",
+      description: "Log borrower lead into CRM",
+      parameters: {
+        type: "object",
+        properties: {
+          full_name: { type: "string" },
+          phone: { type: "string" },
+          email: { type: "string" },
+          lead_type: { type: "string" }, // purchase, refi, DSCR, jumbo, etc.
+          journey: { type: "string" }, // first-time buyer, move-up, investor, etc.
+          summary: { type: "string" },
+        },
+        required: ["lead_type", "journey", "summary"],
       },
-      required: ["lead_type", "journey", "summary"]
-    }
+    },
   },
   {
     type: "function",
-    name: "schedule_callback",
-    description: "Schedule a callback",
-    parameters: {
-      type: "object",
-      properties: {
-        full_name: { type: "string" },
-        phone: { type: "string" },
-        preferred_time_window: { type: "string" },
-        topic: { type: "string" }
+    function: {
+      name: "schedule_callback",
+      description: "Schedule a callback with a human loan officer",
+      parameters: {
+        type: "object",
+        properties: {
+          full_name: { type: "string" },
+          phone: { type: "string" },
+          preferred_time_window: { type: "string" }, // e.g. "Tomorrow morning 9–11am"
+          topic: { type: "string" }, // purchase, refi, DSCR, etc.
+        },
+        required: ["full_name", "phone", "preferred_time_window", "topic"],
       },
-      required: ["full_name", "phone", "preferred_time_window", "topic"]
-    }
+    },
   },
   {
     type: "function",
-    name: "tag_conversation_outcome",
-    description: "Tag call outcome",
-    parameters: {
-      type: "object",
-      properties: {
-        outcome: { type: "string" },
-        details: { type: "string" }
+    function: {
+      name: "tag_conversation_outcome",
+      description: "Tag how the call ended",
+      parameters: {
+        type: "object",
+        properties: {
+          outcome: { type: "string" }, // e.g. "application_link_sent"
+          details: { type: "string" },
+        },
+        required: ["outcome"],
       },
-      required: ["outcome"]
-    }
-  }
+    },
+  },
 ];
 
 // ============================================================
@@ -125,72 +138,75 @@ async function handleToolCall(toolCall) {
     case "send_secure_link":
       return `I just sent the ${args.purpose} link to ${args.recipient}.`;
     case "log_lead_to_crm":
-      return "Lead has been logged.";
+      return "I’ve logged your details so a loan officer can follow up.";
     case "schedule_callback":
-      return `Okay, I’ll schedule that.`;
+      return `Okay, I’ll have a loan officer call you ${args.preferred_time_window}.`;
     case "tag_conversation_outcome":
-      return "Got it.";
+      return "Got it, I’ve noted how this call ended.";
     default:
       return "Done.";
   }
 }
 
 // ============================================================
-// AI RUNNER — updated to use gpt-4o-mini (stable)
+// AI RUNNER — uses gpt-4o-mini with tools
 // ============================================================
 
 async function runLiv(session) {
+  // First call: let Liv decide whether to use tools
   const response = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: session.messages,
     tools,
-    tool_choice: "auto"
+    tool_choice: "auto",
   });
 
   const msg = response.choices[0].message;
 
-  // Tool calls
-  if (msg.tool_calls?.length) {
-    session.messages.push({ role: "assistant", tool_calls: msg.tool_calls });
+  // If Liv decided to use tools, run them and then re-call the model
+  if (msg.tool_calls && msg.tool_calls.length > 0) {
+    session.messages.push({
+      role: "assistant",
+      tool_calls: msg.tool_calls,
+    });
 
     for (const call of msg.tool_calls) {
       const result = await handleToolCall(call);
       session.messages.push({
         role: "tool",
+        tool_call_id: call.id,
         name: call.function.name,
-        content: result
+        content: result,
       });
     }
 
-    // Re-run after tools
     const second = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: session.messages
+      messages: session.messages,
     });
 
     return second.choices[0].message.content || "";
   }
 
+  // No tools; just return Liv's reply
   return msg.content || "";
 }
 
 // ============================================================
-// SESSION
+// SESSION MANAGEMENT
 // ============================================================
 
 function getSession(callSid) {
   if (!sessions.has(callSid)) {
     sessions.set(callSid, {
-      messages: [
-        { role: "system", content: LIV_SYSTEM_PROMPT }
-      ]
+      messages: [{ role: "system", content: LIV_SYSTEM_PROMPT }],
     });
   }
   return sessions.get(callSid);
 }
 
 // ============================================================
-// TWILIO: /voice
+// TWILIO: /voice  — first entry on incoming call
 // ============================================================
 
 app.post("/voice", (req, res) => {
@@ -199,7 +215,7 @@ app.post("/voice", (req, res) => {
   const gather = vr.gather({
     input: "speech",
     action: "/gather",
-    speechTimeout: "auto"
+    speechTimeout: "auto",
   });
 
   gather.say(
@@ -211,7 +227,7 @@ app.post("/voice", (req, res) => {
 });
 
 // ============================================================
-// TWILIO: /gather
+// TWILIO: /gather — handles each user utterance
 // ============================================================
 
 app.post("/gather", async (req, res) => {
@@ -220,15 +236,21 @@ app.post("/gather", async (req, res) => {
 
   const vr = new VoiceResponse();
 
+  // If Twilio didn't get speech, reprompt
   if (!transcript) {
     const g = vr.gather({
       input: "speech",
       action: "/gather",
-      speechTimeout: "auto"
+      speechTimeout: "auto",
     });
-    g.say({ voice: "Polly.Joanna" }, "I didn't catch that. Could you repeat it?");
+    g.say(
+      { voice: "Polly.Joanna" },
+      "I didn't catch that. Could you repeat it?"
+    );
     return res.type("text/xml").send(vr.toString());
   }
+
+  console.log(`Caller said: ${transcript}`);
 
   const session = getSession(callSid);
   session.messages.push({ role: "user", content: transcript });
@@ -240,7 +262,7 @@ app.post("/gather", async (req, res) => {
     const g = vr.gather({
       input: "speech",
       action: "/gather",
-      speechTimeout: "auto"
+      speechTimeout: "auto",
     });
 
     g.say({ voice: "Polly.Joanna" }, reply);
@@ -257,12 +279,18 @@ app.post("/gather", async (req, res) => {
   }
 });
 
-// Root
+// ============================================================
+// ROOT HEALTH CHECK
+// ============================================================
+
 app.get("/", (req, res) => {
   res.send("Liv AI Bridge is running.");
 });
 
-// Start
+// ============================================================
+// START SERVER (Render requires process.env.PORT)
+// ============================================================
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Liv AI Bridge listening on port ${PORT}`);
