@@ -7,9 +7,7 @@ require("dotenv").config();
 
 const express = require("express");
 const bodyParser = require("body-parser");
-const {
-  twiml: { VoiceResponse },
-} = require("twilio");
+const { twiml: { VoiceResponse } } = require("twilio");
 const OpenAI = require("openai");
 const { Readable } = require("stream");
 
@@ -19,7 +17,7 @@ app.use(bodyParser.urlencoded({ extended: false }));
 
 // OpenAI client
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey: process.env.OPENAI_API_KEY
 });
 
 // ElevenLabs config
@@ -66,10 +64,10 @@ const tools = [
       properties: {
         channel: { type: "string" },
         recipient: { type: "string" },
-        purpose: { type: "string" },
+        purpose: { type: "string" }
       },
-      required: ["channel", "recipient", "purpose"],
-    },
+      required: ["channel", "recipient", "purpose"]
+    }
   },
   {
     type: "function",
@@ -83,10 +81,10 @@ const tools = [
         email: { type: "string" },
         lead_type: { type: "string" },
         journey: { type: "string" },
-        summary: { type: "string" },
+        summary: { type: "string" }
       },
-      required: ["lead_type", "journey", "summary"],
-    },
+      required: ["lead_type", "journey", "summary"]
+    }
   },
   {
     type: "function",
@@ -98,10 +96,10 @@ const tools = [
         full_name: { type: "string" },
         phone: { type: "string" },
         preferred_time_window: { type: "string" },
-        topic: { type: "string" },
+        topic: { type: "string" }
       },
-      required: ["full_name", "phone", "preferred_time_window", "topic"],
-    },
+      required: ["full_name", "phone", "preferred_time_window", "topic"]
+    }
   },
   {
     type: "function",
@@ -111,11 +109,11 @@ const tools = [
       type: "object",
       properties: {
         outcome: { type: "string" },
-        details: { type: "string" },
+        details: { type: "string" }
       },
-      required: ["outcome"],
-    },
-  },
+      required: ["outcome"]
+    }
+  }
 ];
 
 // ============================================================
@@ -149,47 +147,48 @@ async function handleToolCall(toolCall) {
 }
 
 // ============================================================
-// AI RUNNER — gpt-4o-mini + tools
+// AI RUNNER — gpt-4o-mini + tools (with tool_call_id fixed)
 // ============================================================
 
 async function runLiv(session) {
+  // First call: allow tools
   const response = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: session.messages,
     tools,
-    tool_choice: "auto",
+    tool_choice: "auto"
   });
 
   const msg = response.choices[0].message;
 
-  // Tool calls
-  if (msg.tool_calls?.length) {
-    // Record the assistant's tool calls
+  // If tools were called
+  if (msg.tool_calls && msg.tool_calls.length > 0) {
+    // Record assistant tool_calls message
     session.messages.push({
       role: "assistant",
-      tool_calls: msg.tool_calls,
+      tool_calls: msg.tool_calls
     });
 
-    // Execute each tool and append results with tool_call_id
+    // Execute each tool and push a corresponding tool-message
     for (const call of msg.tool_calls) {
       const result = await handleToolCall(call);
       session.messages.push({
         role: "tool",
-        tool_call_id: call.id, // REQUIRED by OpenAI
-        name: call.function.name,
-        content: result,
+        tool_call_id: call.id,         // <- REQUIRED FIELD
+        content: result
       });
     }
 
-    // Re-run after tools
+    // Second call: now with tool results in history
     const second = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: session.messages,
+      messages: session.messages
     });
 
     return second.choices[0].message.content || "";
   }
 
+  // No tools, just return the assistant message
   return msg.content || "";
 }
 
@@ -200,7 +199,9 @@ async function runLiv(session) {
 function getSession(callSid) {
   if (!sessions.has(callSid)) {
     sessions.set(callSid, {
-      messages: [{ role: "system", content: LIV_SYSTEM_PROMPT }],
+      messages: [
+        { role: "system", content: LIV_SYSTEM_PROMPT }
+      ]
     });
   }
   return sessions.get(callSid);
@@ -226,25 +227,21 @@ app.get("/tts", async (req, res) => {
         headers: {
           "xi-api-key": ELEVENLABS_API_KEY,
           "Content-Type": "application/json",
-          Accept: "audio/mpeg",
+          "Accept": "audio/mpeg"
         },
         body: JSON.stringify({
           text,
           model_id: "eleven_multilingual_v2",
           voice_settings: {
             stability: 0.5,
-            similarity_boost: 0.8,
-          },
-        }),
+            similarity_boost: 0.8
+          }
+        })
       }
     );
 
     if (!apiRes.ok || !apiRes.body) {
-      console.error(
-        "ElevenLabs TTS HTTP error:",
-        apiRes.status,
-        await apiRes.text()
-      );
+      console.error("ElevenLabs TTS HTTP error:", apiRes.status, await apiRes.text());
       return res.status(500).end();
     }
 
@@ -271,13 +268,12 @@ function playTtsInGather(gather, text) {
 app.post("/voice", (req, res) => {
   const vr = new VoiceResponse();
 
-  const greeting =
-    "This is Liv with Official Mortgage. How can I help you today?";
+  const greeting = "This is Liv with Official Mortgage. How can I help you today?";
 
   const gather = vr.gather({
     input: "speech",
     action: "/gather",
-    speechTimeout: "auto",
+    speechTimeout: "auto"
   });
 
   playTtsInGather(gather, greeting);
@@ -299,7 +295,7 @@ app.post("/gather", async (req, res) => {
     const g = vr.gather({
       input: "speech",
       action: "/gather",
-      speechTimeout: "auto",
+      speechTimeout: "auto"
     });
     playTtsInGather(g, "I didn't catch that. Could you repeat it?");
     return res.type("text/xml").send(vr.toString());
@@ -315,7 +311,7 @@ app.post("/gather", async (req, res) => {
     const g = vr.gather({
       input: "speech",
       action: "/gather",
-      speechTimeout: "auto",
+      speechTimeout: "auto"
     });
 
     playTtsInGather(g, reply);
