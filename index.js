@@ -7,7 +7,9 @@ require("dotenv").config();
 
 const express = require("express");
 const bodyParser = require("body-parser");
-const { twiml: { VoiceResponse } } = require("twilio");
+const {
+  twiml: { VoiceResponse }
+} = require("twilio");
 const OpenAI = require("openai");
 
 // App setup
@@ -227,20 +229,17 @@ async function runLiv(session) {
 function getSession(callSid) {
   if (!sessions.has(callSid)) {
     sessions.set(callSid, {
-      messages: [
-        { role: "system", content: LIV_SYSTEM_PROMPT }
-      ]
+      messages: [{ role: "system", content: LIV_SYSTEM_PROMPT }]
     });
   }
   return sessions.get(callSid);
 }
 
 // ============================================================
-// 6. TWILIO ROUTES
+// 6. TWILIO ROUTE HANDLERS
 // ============================================================
 
-// Initial voice handler
-app.post("/voice", (req, res) => {
+function voiceHandler(req, res) {
   const vr = new VoiceResponse();
 
   const gather = vr.gather({
@@ -255,10 +254,9 @@ app.post("/voice", (req, res) => {
   );
 
   res.type("text/xml").send(vr.toString());
-});
+}
 
-// Speech gather route
-app.post("/gather", async (req, res) => {
+async function gatherHandler(req, res) {
   const callSid = req.body.CallSid;
   const transcript = req.body.SpeechResult;
 
@@ -270,7 +268,10 @@ app.post("/gather", async (req, res) => {
       action: "/gather",
       speechTimeout: "auto"
     });
-    g.say({ voice: "Polly.Joanna" }, "I didn't catch that. Could you repeat it?");
+    g.say(
+      { voice: "Polly.Joanna" },
+      "I didn't catch that. Could you repeat it?"
+    );
     return res.type("text/xml").send(vr.toString());
   }
 
@@ -299,7 +300,19 @@ app.post("/gather", async (req, res) => {
     );
     res.type("text/xml").send(vr.toString());
   }
-});
+}
+
+// ============================================================
+// 7. TWILIO ROUTES (base + /twilio/* aliases)
+// ============================================================
+
+// Voice entrypoint
+app.post("/voice", voiceHandler);
+app.post("/twilio/voice", voiceHandler); // for URL: /twilio/voice
+
+// Speech gather
+app.post("/gather", gatherHandler);
+app.post("/twilio/gather", gatherHandler); // safe alias if ever used
 
 // Root
 app.get("/", (req, res) => {
@@ -307,7 +320,7 @@ app.get("/", (req, res) => {
 });
 
 // ============================================================
-// 7. START SERVER (Render requires process.env.PORT)
+// 8. START SERVER (Render requires process.env.PORT)
 // ============================================================
 
 const PORT = process.env.PORT || 3000;
