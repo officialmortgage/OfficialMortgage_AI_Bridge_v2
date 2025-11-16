@@ -53,81 +53,73 @@ PRIMARY MISSIONS:
 `;
 
 // ============================================================
-// TOOLS (OpenAI v2 format: type: "function" + function:{...})
+// TOOLS (OpenAI v2 format: type: "function")
 // ============================================================
 
 const tools = [
   {
     type: "function",
-    function: {
-      name: "send_secure_link",
-      description: "Send borrower a secure link (SMS or email).",
-      parameters: {
-        type: "object",
-        properties: {
-          channel: { type: "string" },
-          recipient: { type: "string" },
-          purpose: { type: "string" },
-        },
-        required: ["channel", "recipient", "purpose"],
+    name: "send_secure_link",
+    description: "Send borrower a secure link (SMS or email).",
+    parameters: {
+      type: "object",
+      properties: {
+        channel: { type: "string" },
+        recipient: { type: "string" },
+        purpose: { type: "string" },
       },
+      required: ["channel", "recipient", "purpose"],
     },
   },
   {
     type: "function",
-    function: {
-      name: "log_lead_to_crm",
-      description: "Log borrower lead details for follow-up.",
-      parameters: {
-        type: "object",
-        properties: {
-          full_name: { type: "string" },
-          phone: { type: "string" },
-          email: { type: "string" },
-          lead_type: { type: "string" },
-          journey: { type: "string" },
-          summary: { type: "string" },
-        },
-        required: ["lead_type", "journey", "summary"],
+    name: "log_lead_to_crm",
+    description: "Log borrower lead details for follow-up.",
+    parameters: {
+      type: "object",
+      properties: {
+        full_name: { type: "string" },
+        phone: { type: "string" },
+        email: { type: "string" },
+        lead_type: { type: "string" },
+        journey: { type: "string" },
+        summary: { type: "string" },
       },
+      required: ["lead_type", "journey", "summary"],
     },
   },
   {
     type: "function",
-    function: {
-      name: "schedule_callback",
-      description: "Schedule a callback with a loan officer.",
-      parameters: {
-        type: "object",
-        properties: {
-          full_name: { type: "string" },
-          phone: { type: "string" },
-          preferred_time_window: { type: "string" },
-          topic: { type: "string" },
-        },
-        required: ["full_name", "phone", "preferred_time_window", "topic"],
+    name: "schedule_callback",
+    description: "Schedule a callback with a loan officer.",
+    parameters: {
+      type: "object",
+      properties: {
+        full_name: { type: "string" },
+        phone: { type: "string" },
+        preferred_time_window: { type: "string" },
+        topic: { type: "string" },
       },
+      required: ["full_name", "phone", "preferred_time_window", "topic"],
     },
   },
   {
     type: "function",
-    function: {
-      name: "tag_conversation_outcome",
-      description: "Tag how the call ended.",
-      parameters: {
-        type: "object",
-        properties: {
-          outcome: { type: "string" },
-          details: { type: "string" },
-        },
-        required: ["outcome"],
+    name: "tag_conversation_outcome",
+    description: "Tag how the call ended.",
+    parameters: {
+      type: "object",
+      properties: {
+        outcome: { type: "string" },
+        details: { type: "string" },
       },
+      required: ["outcome"],
     },
   },
 ];
 
 // ============================================================
-// TOOL HANDLER (natural-language summaries only for now)
+// TOOL HANDLER (returns natural-language summaries)
 // ============================================================
 
 async function handleToolCall(toolCall) {
@@ -170,18 +162,26 @@ async function runLiv(session) {
 
   const msg = response.choices[0].message;
 
+  // Tool calls
   if (msg.tool_calls?.length) {
-    session.messages.push({ role: "assistant", tool_calls: msg.tool_calls });
+    // Record the assistant's tool calls
+    session.messages.push({
+      role: "assistant",
+      tool_calls: msg.tool_calls,
+    });
 
+    // Execute each tool and append results with tool_call_id
     for (const call of msg.tool_calls) {
       const result = await handleToolCall(call);
       session.messages.push({
         role: "tool",
+        tool_call_id: call.id, // REQUIRED by OpenAI
         name: call.function.name,
         content: result,
       });
     }
 
+    // Re-run after tools
     const second = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: session.messages,
@@ -324,6 +324,7 @@ app.post("/gather", async (req, res) => {
   } catch (err) {
     console.error("AI error:", err);
 
+    // Simple fallback if OpenAI or ElevenLabs fail
     vr.say(
       "I'm having trouble right now. A loan officer will follow up shortly."
     );
