@@ -121,7 +121,13 @@ const tools = [
         topic: { type: "string" },
         priority: { type: "string" },
       },
-      required: ["full_name", "phone", "preferred_time_window", "topic", "priority"],
+      required: [
+        "full_name",
+        "phone",
+        "preferred_time_window",
+        "topic",
+        "priority",
+      ],
     },
   },
   {
@@ -170,11 +176,15 @@ async function handleToolCall(toolCall) {
   // Placeholder responses (safe for production, real services optional)
   switch (name) {
     case "send_secure_link":
-      return `The secure ${args.purpose || "mortgage"} link was sent to ${args.recipient || "the borrower"}.`;
+      return `The secure ${
+        args.purpose || "mortgage"
+      } link was sent to ${args.recipient || "the borrower"}.`;
     case "log_lead_to_crm":
       return "Lead logged successfully.";
     case "schedule_callback":
-      return `Callback scheduled for ${args.preferred_time_window || "the requested time window"}.`;
+      return `Callback scheduled for ${
+        args.preferred_time_window || "the requested time window"
+      }.`;
     case "tag_conversation_outcome":
       return `Outcome recorded: ${args.outcome || "unspecified"}.`;
     case "escalate_to_human":
@@ -190,7 +200,7 @@ async function handleToolCall(toolCall) {
 
 async function runLiv(session) {
   const response = await openai.chat.completions.create({
-    model: "gpt-5.1-mini",
+    model: "gpt-4o-mini",
     messages: session.messages,
     tools,
     tool_choice: "auto",
@@ -213,7 +223,7 @@ async function runLiv(session) {
 
     // Re-run after tools
     const second = await openai.chat.completions.create({
-      model: "gpt-5.1-mini",
+      model: "gpt-4o-mini",
       messages: session.messages,
     });
 
@@ -274,7 +284,10 @@ async function handleGather(req, res) {
       action: "/gather",
       speechTimeout: "auto",
     });
-    g.say({ voice: "Polly.Joanna" }, "I didn't catch that. Could you repeat it?");
+    g.say(
+      { voice: "Polly.Joanna" },
+      "I didn't catch that. Could you repeat it?"
+    );
     return res.type("text/xml").send(vr.toString());
   }
 
