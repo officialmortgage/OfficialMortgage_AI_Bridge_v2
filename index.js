@@ -1,16 +1,15 @@
 // ============================================================
-// Official Mortgage — Liv AI Bridge v2 (Stable Fixed Build)
-// Twilio Voice → OpenAI LLM (with tools) → TTS → Twilio
+// Official Mortgage — Liv AI Bridge v2 (ElevenLabs Voice Build)
+// Twilio Voice → OpenAI (tools) → ElevenLabs TTS → Twilio
 // ============================================================
 
 require("dotenv").config();
 
 const express = require("express");
 const bodyParser = require("body-parser");
-const {
-  twiml: { VoiceResponse },
-} = require("twilio");
+const { twiml: { VoiceResponse } } = require("twilio");
 const OpenAI = require("openai");
+const { Readable } = require("stream");
 
 // App setup
 const app = express();
@@ -18,10 +17,17 @@ app.use(bodyParser.urlencoded({ extended: false }));
 
 // OpenAI client
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey: process.env.OPENAI_API_KEY
 });
 
-// Session store (per CallSid)
+// ElevenLabs config
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
+
+// IMPORTANT: this must match your Render service URL
+const BASE_URL = "https://officialmortgage-ai-bridge-v2.onrender.com";
+
+// Per-call memory
 const sessions = new Map();
 
 // ============================================================
@@ -37,89 +43,81 @@ INTRO:
 “This is Liv with Official Mortgage. How can I help you today?”
 
 PRIMARY MISSIONS:
-1. Understand caller goal (purchase, refi, DSCR, jumbo, agent partner, etc.).
+1. Understand caller goal (purchase, refi, cash out, jumbo, DSCR, agent partner).
 2. Ask smart follow-up questions.
-3. Build trust using brief reflections, not long speeches.
-4. Keep answers short and focused.
-5. Move the caller forward (application link, pricing link, callback, etc.).
+3. Build trust.
+4. Keep answers short and clear.
+5. Move caller toward a next step (application link, pricing link, callback, etc.).
 `;
 
 // ============================================================
-// TOOLS — correct OpenAI format (type + function object)
+// TOOLS (OpenAI v2 format: type: "function")
 // ============================================================
 
 const tools = [
   {
     type: "function",
-    function: {
-      name: "send_secure_link",
-      description: "Send borrower a secure link via SMS or email",
-      parameters: {
-        type: "object",
-        properties: {
-          channel: { type: "string" }, // sms, email, etc.
-          recipient: { type: "string" },
-          purpose: { type: "string" }, // app_link, pricing_link, docs_link, etc.
-        },
-        required: ["channel", "recipient", "purpose"],
+    name: "send_secure_link",
+    description: "Send borrower a secure link (SMS or email).",
+    parameters: {
+      type: "object",
+      properties: {
+        channel: { type: "string" },
+        recipient: { type: "string" },
+        purpose: { type: "string" }
       },
-    },
+      required: ["channel", "recipient", "purpose"]
+    }
   },
   {
     type: "function",
-    function: {
-      name: "log_lead_to_crm",
-      description: "Log borrower lead into CRM",
-      parameters: {
-        type: "object",
-        properties: {
-          full_name: { type: "string" },
-          phone: { type: "string" },
-          email: { type: "string" },
-          lead_type: { type: "string" }, // purchase, refi, DSCR, jumbo, etc.
-          journey: { type: "string" }, // first-time buyer, move-up, investor, etc.
-          summary: { type: "string" },
-        },
-        required: ["lead_type", "journey", "summary"],
+    name: "log_lead_to_crm",
+    description: "Log borrower lead details for follow-up.",
+    parameters: {
+      type: "object",
+      properties: {
+        full_name: { type: "string" },
+        phone: { type: "string" },
+        email: { type: "string" },
+        lead_type: { type: "string" },
+        journey: { type: "string" },
+        summary: { type: "string" }
       },
-    },
+      required: ["lead_type", "journey", "summary"]
+    }
   },
   {
     type: "function",
-    function: {
-      name: "schedule_callback",
-      description: "Schedule a callback with a human loan officer",
-      parameters: {
-        type: "object",
-        properties: {
-          full_name: { type: "string" },
-          phone: { type: "string" },
-          preferred_time_window: { type: "string" }, // e.g. "Tomorrow morning 9–11am"
-          topic: { type: "string" }, // purchase, refi, DSCR, etc.
-        },
-        required: ["full_name", "phone", "preferred_time_window", "topic"],
+    name: "schedule_callback",
+    description: "Schedule a callback with a loan officer.",
+    parameters: {
+      type: "object",
+      properties: {
+        full_name: { type: "string" },
+        phone: { type: "string" },
+        preferred_time_window: { type: "string" },
+        topic: { type: "string" }
       },
-    },
+      required: ["full_name", "phone", "preferred_time_window", "topic"]
+    }
   },
   {
     type: "function",
-    function: {
-      name: "tag_conversation_outcome",
-      description: "Tag how the call ended",
-      parameters: {
-        type: "object",
-        properties: {
-          outcome: { type: "string" }, // e.g. "application_link_sent"
-          details: { type: "string" },
-        },
-        required: ["outcome"],
+    name: "tag_conversation_outcome",
+    description: "Tag how the call ended.",
+    parameters: {
+      type: "object",
+      properties: {
+        outcome: { type: "string" },
+        details: { type: "string" }
       },
-    },
-  },
+      required: ["outcome"]
+    }
+  }
 ];
 
 // ============================================================
-// TOOL HANDLER
+// TOOL HANDLER (currently just returns natural-language summaries)
 // ============================================================
 
 async function handleToolCall(toolCall) {
@@ -140,7 +138,7 @@ async function handleToolCall(toolCall) {
     case "log_lead_to_crm":
       return "I’ve logged your details so a loan officer can follow up.";
     case "schedule_callback":
-      return `Okay, I’ll have a loan officer call you ${args.preferred_time_window}.`;
+      return "Okay, I’ll schedule that callback for you.";
     case "tag_conversation_outcome":
       return "Got it, I’ve noted how this call ended.";
     default:
@@ -149,46 +147,41 @@ async function handleToolCall(toolCall) {
 }
 
 // ============================================================
-// AI RUNNER — uses gpt-4o-mini with tools
+// AI RUNNER — gpt-4o-mini + tools
 // ============================================================
 
 async function runLiv(session) {
-  // First call: let Liv decide whether to use tools
   const response = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: session.messages,
     tools,
-    tool_choice: "auto",
+    tool_choice: "auto"
   });
 
   const msg = response.choices[0].message;
 
-  // If Liv decided to use tools, run them and then re-call the model
-  if (msg.tool_calls && msg.tool_calls.length > 0) {
-    session.messages.push({
-      role: "assistant",
-      tool_calls: msg.tool_calls,
-    });
+  // Tool calls
+  if (msg.tool_calls?.length) {
+    session.messages.push({ role: "assistant", tool_calls: msg.tool_calls });
 
     for (const call of msg.tool_calls) {
       const result = await handleToolCall(call);
       session.messages.push({
         role: "tool",
-        tool_call_id: call.id,
         name: call.function.name,
-        content: result,
+        content: result
       });
     }
 
+    // Re-run after tools
     const second = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: session.messages,
+      messages: session.messages
     });
 
     return second.choices[0].message.content || "";
   }
 
-  // No tools; just return Liv's reply
   return msg.content || "";
 }
 
@@ -199,35 +192,90 @@ async function runLiv(session) {
 function getSession(callSid) {
   if (!sessions.has(callSid)) {
     sessions.set(callSid, {
-      messages: [{ role: "system", content: LIV_SYSTEM_PROMPT }],
+      messages: [
+        { role: "system", content: LIV_SYSTEM_PROMPT }
+      ]
     });
   }
   return sessions.get(callSid);
 }
 
 // ============================================================
-// TWILIO: /voice  — first entry on incoming call
+// ElevenLabs TTS endpoint  →  Twilio <Play> uses this URL
+// ============================================================
+
+app.get("/tts", async (req, res) => {
+  const text = req.query.text || "This is Liv with Official Mortgage.";
+
+  if (!ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID) {
+    console.error("Missing ELEVENLABS_API_KEY or ELEVENLABS_VOICE_ID");
+    return res.status(500).end();
+  }
+
+  try {
+    const apiRes = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
+      {
+        method: "POST",
+        headers: {
+          "xi-api-key": ELEVENLABS_API_KEY,
+          "Content-Type": "application/json",
+          "Accept": "audio/mpeg"
+        },
+        body: JSON.stringify({
+          text,
+          model_id: "eleven_multilingual_v2",
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.8
+          }
+        })
+      }
+    );
+
+    if (!apiRes.ok || !apiRes.body) {
+      console.error("ElevenLabs TTS HTTP error:", apiRes.status, await apiRes.text());
+      return res.status(500).end();
+    }
+
+    res.setHeader("Content-Type", "audio/mpeg");
+
+    const nodeStream = Readable.fromWeb(apiRes.body);
+    nodeStream.pipe(res);
+  } catch (err) {
+    console.error("ElevenLabs TTS exception:", err);
+    res.status(500).end();
+  }
+});
+
+// Helper to add TTS prompt to a <Gather>
+function playTtsInGather(gather, text) {
+  const url = `${BASE_URL}/tts?text=${encodeURIComponent(text)}`;
+  gather.play(url);
+}
+
+// ============================================================
+// TWILIO: /voice  (initial greeting)
 // ============================================================
 
 app.post("/voice", (req, res) => {
   const vr = new VoiceResponse();
 
+  const greeting = "This is Liv with Official Mortgage. How can I help you today?";
+
   const gather = vr.gather({
     input: "speech",
     action: "/gather",
-    speechTimeout: "auto",
+    speechTimeout: "auto"
   });
 
-  gather.say(
-    { voice: "Polly.Joanna" },
-    "This is Liv with Official Mortgage. How can I help you today?"
-  );
+  playTtsInGather(gather, greeting);
 
   res.type("text/xml").send(vr.toString());
 });
 
 // ============================================================
-// TWILIO: /gather — handles each user utterance
+// TWILIO: /gather  (conversation loop)
 // ============================================================
 
 app.post("/gather", async (req, res) => {
@@ -236,21 +284,15 @@ app.post("/gather", async (req, res) => {
 
   const vr = new VoiceResponse();
 
-  // If Twilio didn't get speech, reprompt
   if (!transcript) {
     const g = vr.gather({
       input: "speech",
       action: "/gather",
-      speechTimeout: "auto",
+      speechTimeout: "auto"
     });
-    g.say(
-      { voice: "Polly.Joanna" },
-      "I didn't catch that. Could you repeat it?"
-    );
+    playTtsInGather(g, "I didn't catch that. Could you repeat it?");
     return res.type("text/xml").send(vr.toString());
   }
-
-  console.log(`Caller said: ${transcript}`);
 
   const session = getSession(callSid);
   session.messages.push({ role: "user", content: transcript });
@@ -262,35 +304,29 @@ app.post("/gather", async (req, res) => {
     const g = vr.gather({
       input: "speech",
       action: "/gather",
-      speechTimeout: "auto",
+      speechTimeout: "auto"
     });
 
-    g.say({ voice: "Polly.Joanna" }, reply);
+    playTtsInGather(g, reply);
 
     res.type("text/xml").send(vr.toString());
   } catch (err) {
     console.error("AI error:", err);
 
+    // Simple fallback if OpenAI or ElevenLabs fail
     vr.say(
-      { voice: "Polly.Joanna" },
       "I'm having trouble right now. A loan officer will follow up shortly."
     );
     res.type("text/xml").send(vr.toString());
   }
 });
 
-// ============================================================
-// ROOT HEALTH CHECK
-// ============================================================
-
+// Root
 app.get("/", (req, res) => {
-  res.send("Liv AI Bridge is running.");
+  res.send("Liv AI Bridge is running with ElevenLabs voice.");
 });
 
-// ============================================================
-// START SERVER (Render requires process.env.PORT)
-// ============================================================
-
+// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Liv AI Bridge listening on port ${PORT}`);
