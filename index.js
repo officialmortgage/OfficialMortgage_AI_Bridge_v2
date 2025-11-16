@@ -1,6 +1,7 @@
 // ============================================================
 // Official Mortgage — Liv AI Bridge v2 (ElevenLabs Voice Build)
 // Twilio Voice → OpenAI (tools) → ElevenLabs TTS → Twilio
+// + LIV Marketplace Intent Bridge (via src/livRouter.js)
 // ============================================================
 
 require("dotenv").config();
@@ -11,9 +12,14 @@ const { twiml: { VoiceResponse } } = require("twilio");
 const OpenAI = require("openai");
 const { Readable } = require("stream");
 
+// NEW: LIV Marketplace router (intent + Marketplace URLs)
+const liv = require("./src/livRouter");
+
 // App setup
 const app = express();
+// Parse form-encoded (Twilio) and JSON (webhooks)
 app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
 
 // OpenAI client
 const openai = new OpenAI({
@@ -252,7 +258,7 @@ function playTts(g, text) {
 }
 
 // ============================================================
-// TWILIO ROUTES
+// TWILIO VOICE ROUTES (LIVE CONVERSATION FLOW)
 // ============================================================
 
 app.post("/voice", (req, res) => {
@@ -305,9 +311,30 @@ app.post("/gather", async (req, res) => {
   }
 });
 
+// ============================================================
+// NEW: LIV MARKETPLACE / SMS / WEBHOOK ROUTES
+// ============================================================
+
+// Twilio inbound webhook (SMS or voice-to-text intent router)
+app.post("/twilio/liv", liv.handleTwilioWebhook);
+
+// Marketplace event callback (account created, app completed, etc.)
+app.post("/liv/marketplace-event", liv.handleMarketplaceEvent);
+
+// Valuation callback (from your internal valuation workflow)
+app.post("/liv/valuation-callback", liv.handleValuationCallback);
+
+// ============================================================
+// HEALTH CHECK
+// ============================================================
+
 app.get("/", (req, res) => {
-  res.send("Liv AI Bridge is running with ElevenLabs voice + OpenAI tools fixed.");
+  res.send("Liv AI Bridge is running with ElevenLabs voice + OpenAI tools + Marketplace intents.");
 });
+
+// ============================================================
+// START SERVER
+// ============================================================
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Liv AI Bridge running on port", PORT));

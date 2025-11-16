@@ -1,0 +1,69 @@
+{
+  "bot": {
+    "name": "LIV",
+    "brand": "Official Mortgage",
+    "primary_url": "https://bit.ly/OfficialMortgageMarketplace"
+  },
+  "urls": {
+    "MARKETPLACE_URL": "https://bit.ly/OfficialMortgageMarketplace",
+    "CALENDAR_URL": "https://calendly.com/officialmtg/new-meeting",
+    "DSCR_URL": "https://www.officialmtg.com/loan-programs/dscr-loans",
+    "REFI_URL": "https://www.officialmtg.com/loan-programs/refinance-loans",
+    "FULL_APP_URL": "https://www.officialmtg.com/default/applications/register?app_type=full",
+    "DOC_UPLOAD_URL": "https://www.officialmtg.com/isadore/applications/register?app_type=secure-documents",
+    "HOMEPAGE_URL": "http://www.officialmtg.com"
+  },
+  "intents": {
+    "PURCHASE": {
+      "keywords": ["buy", "purchase", "preapproval", "pre-approval", "offer", "home search"],
+      "primary_cta": "MARKETPLACE_URL"
+    },
+    "REFI": {
+      "keywords": ["refi", "refinance", "lower my rate", "lower payment", "new rate"],
+      "primary_cta": "REFI_URL",
+      "secondary_cta": "MARKETPLACE_URL"
+    },
+    "CASHOUT": {
+      "keywords": ["cash out", "cash-out", "debt", "debt consolidation", "pull equity", "renovate"],
+      "primary_cta": "MARKETPLACE_URL"
+    },
+    "DSCR": {
+      "keywords": ["dscr", "debt service", "rental property", "cash flow", "cap rate"],
+      "primary_cta": "DSCR_URL",
+      "secondary_cta": "MARKETPLACE_URL"
+    },
+    "EQUITY": {
+      "keywords": ["equity", "heloc", "line of credit", "2nd mortgage", "second lien"],
+      "primary_cta": "MARKETPLACE_URL"
+    },
+    "JUMBO": {
+      "keywords": ["jumbo", "high balance", "large loan"],
+      "primary_cta": "MARKETPLACE_URL"
+    },
+    "NONQM": {
+      "keywords": ["self-employed", "bank statement", "1099", "p&l", "non qm", "non-qm"],
+      "primary_cta": "MARKETPLACE_URL"
+    },
+    "AFFORDABLE": {
+      "keywords": ["first-time", "first time", "down payment assistance", "dpa", "grant", "home ready", "home possible"],
+      "primary_cta": "MARKETPLACE_URL"
+    },
+    "READY_TO_MOVE": {
+      "keywords": ["ready", "move forward", "apply", "start", "let's do it"],
+      "primary_cta": "MARKETPLACE_URL"
+    }
+  },
+  "flags": {
+    "INTAKE_ACTIVE": false,
+    "MARKETPLACE_PUSHED": false,
+    "ACCOUNT_CREATED": false,
+    "APP_COMPLETED": false,
+    "CREDIT_AUTHORIZED": false,
+    "SMARTVERIFY_TRIGGERED": false,
+    "SMARTVERIFY_COMPLETE": false,
+    "DOC_UPLOAD_STARTED": false,
+    "DOC_UPLOAD_COMPLETE": false,
+    "VALUATION_COMPLETE": false,
+    "HOT_LEAD": false
+  }
+}
