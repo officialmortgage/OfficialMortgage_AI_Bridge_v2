@@ -1,8 +1,5 @@
-// ============================================================
-// Liv Brain Loader
-// - Loads all .txt modules from ./liv-brain-v4
-// - Concatenates them into a single system prompt
-// ============================================================
+// livBrain.js
+// Load Liv brain from separate module files in /liv-brain-v4
 
 const fs = require("fs");
 const path = require("path");
@@ -11,28 +8,36 @@ function loadLivBrain() {
   const brainDir = path.join(__dirname, "liv-brain-v4");
 
   if (!fs.existsSync(brainDir)) {
-    console.error("liv-brain-v4 directory not found:", brainDir);
-    return "You are Liv, the Official Mortgage AI assistant. (Brain directory missing.)";
+    throw new Error(`Brain directory not found: ${brainDir}`);
   }
 
+  // Only load the numbered module files 01_ ... 16_
   const files = fs
     .readdirSync(brainDir)
-    .filter((f) => f.toLowerCase().endsWith(".txt"))
-    .sort(); // ensure consistent order
+    .filter((name) => /^(0[1-9]|1[0-6])_.*\.txt$/.test(name))
+    .sort(); // ensures 01_, 02_, ... 16_ order
 
   if (files.length === 0) {
-    console.error("No .txt files found in liv-brain-v4:", brainDir);
-    return "You are Liv, the Official Mortgage AI assistant. (No brain modules found.)";
+    throw new Error(`No module files found in ${brainDir}`);
   }
 
-  console.log("Loading Liv brain modules:", files);
+  const parts = [];
 
-  const parts = files.map((file) => {
+  for (const file of files) {
     const fullPath = path.join(brainDir, file);
-    return fs.readFileSync(fullPath, "utf8");
-  });
+    const content = fs.readFileSync(fullPath, "utf8").trim();
+    if (!content) continue;
 
-  return parts.join("\n\n");
+    parts.push(
+      [
+        `\n\n[START MODULE ${file}]`,
+        content,
+        `[END MODULE ${file}]\n`
+      ].join("\n")
+    );
+  }
+
+  return parts.join("\n");
 }
 
 const livSystemPrompt = loadLivBrain();
