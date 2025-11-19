@@ -68,7 +68,10 @@ async function getLivReply(userText, channel) {
   });
 
   const choice = completion.choices[0];
-  const text = (choice.message && choice.message.content) ? choice.message.content.trim() : "";
+  const text = (choice.message && choice.message.content)
+    ? choice.message.content.trim()
+    : "";
+
   return text || "I’m here and listening. How can I help you with your mortgage today?";
 }
 
@@ -150,12 +153,16 @@ app.post("/sms", async (req, res) => {
 // ------------------------------------------------------------
 // Voice: initial entry point
 // Twilio webhook URL: POST /voice
+// Uses ElevenLabs for the greeting so you only hear one voice.
 // ------------------------------------------------------------
-app.post("/voice", (req, res) => {
+app.post("/voice", async (req, res) => {
   const from = req.body.From || "Unknown";
   console.log("Incoming voice call from", from);
 
   const twiml = new VoiceResponse();
+
+  const greetingText =
+    "Hi, this is Liv with Official Mortgage. How can I help you today — buy a home, refinance, or pull cash out of your equity?";
 
   const gather = twiml.gather({
     input: "speech",
@@ -164,15 +171,29 @@ app.post("/voice", (req, res) => {
     speechTimeout: "auto"
   });
 
-  gather.say(
-    {
-      voice: "Polly.Joanna" // Twilio TTS just for the very first greeting
-    },
-    "Hi, this is Liv with Official Mortgage. How can I help you today?"
-  );
+  try {
+    const audioUrl = await synthesizeSpeechToUrl(greetingText);
 
-  // If no speech captured, just hang up politely
-  twiml.redirect("/voice/fallback");
+    if (audioUrl) {
+      gather.play(audioUrl);
+    } else {
+      // Fallback: Twilio TTS only if ElevenLabs is unavailable
+      gather.say(
+        {
+          voice: "Polly.Joanna"
+        },
+        greetingText
+      );
+    }
+  } catch (err) {
+    console.error("Error getting ElevenLabs greeting:", err);
+    gather.say(
+      {
+        voice: "Polly.Joanna"
+      },
+      greetingText
+    );
+  }
 
   res.type("text/xml");
   res.send(twiml.toString());
@@ -191,6 +212,7 @@ app.post("/voice/fallback", (_req, res) => {
 
 // ------------------------------------------------------------
 // Voice: handle caller's speech, call GPT-5.1, play ElevenLabs audio
+// Only ElevenLabs is used for the reply when possible.
 // ------------------------------------------------------------
 app.post("/voice/handle", async (req, res) => {
   const speechResult = (req.body.SpeechResult || "").trim();
@@ -201,7 +223,7 @@ app.post("/voice/handle", async (req, res) => {
   const twiml = new VoiceResponse();
 
   if (!speechResult) {
-    twiml.say("I didn’t hear anything. Let’s try one more time.");
+    // No speech heard, send them back through the greeting flow once
     twiml.redirect("/voice");
     res.type("text/xml");
     return res.send(twiml.toString());
@@ -211,24 +233,23 @@ app.post("/voice/handle", async (req, res) => {
     const livReply = await getLivReply(speechResult, "VOICE");
     console.log("Liv reply:", livReply);
 
-    // Try ElevenLabs first
-    const audioUrl = await synthesizeSpeechToUrl(livReply);
-
-    if (audioUrl) {
-      twiml.play(audioUrl);
-    } else {
-      // Fallback to Twilio TTS if ElevenLabs unavailable
-      twiml.say(livReply);
-    }
-
-    // Gather again for continued conversation
+    // Gather for the next turn and play ElevenLabs inside the gather,
+    // so there is only one voice.
     const gather = twiml.gather({
       input: "speech",
       action: "/voice/handle",
       method: "POST",
       speechTimeout: "auto"
     });
-    gather.say("You can ask another question, or tell me what you see on your screen.");
+
+    const audioUrl = await synthesizeSpeechToUrl(livReply);
+
+    if (audioUrl) {
+      gather.play(audioUrl);
+    } else {
+      // Fallback to Twilio TTS if ElevenLabs unavailable
+      gather.say(livReply);
+    }
 
     res.type("text/xml");
     res.send(twiml.toString());
