@@ -1,6 +1,6 @@
 // ============================================================
 // Official Mortgage — Liv AI Bridge v5.1
-// Twilio Voice + SMS → OpenAI (GPT-5.1) → ElevenLabs (voice) / SMS text
+// Twilio Voice + SMS → OpenAI (GPT-5.1) → ElevenLabs (voice) / SMS
 // ============================================================
 
 require("dotenv").config();
@@ -14,7 +14,7 @@ const bodyParser = require("body-parser");
 const { twiml: { VoiceResponse, MessagingResponse } } = require("twilio");
 const OpenAI = require("openai");
 
-// Brain loader (your patched v4 brain + CTA/Closer rules)
+// Brain loader (separate v4 brain modules)
 const { livSystemPrompt } = require("./livBrain");
 
 // ------------------------------------------------------------
@@ -44,8 +44,8 @@ const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
 
 // IMPORTANT: must match your Render service URL
-// Example: https://officialmortgage-ai-bridge-v2.onrender.com
-const BASE_URL = process.env.BASE_URL || "https://officialmortgage-ai-bridge-v2.onrender.com";
+const BASE_URL =
+  process.env.BASE_URL || "https://officialmortgage-ai-bridge-v2.onrender.com";
 
 // ------------------------------------------------------------
 // Helper: call Liv brain via GPT-5.1
@@ -68,11 +68,15 @@ async function getLivReply(userText, channel) {
   });
 
   const choice = completion.choices[0];
-  const text = (choice.message && choice.message.content)
-    ? choice.message.content.trim()
-    : "";
+  const text =
+    choice && choice.message && choice.message.content
+      ? choice.message.content.trim()
+      : "";
 
-  return text || "I’m here and listening. How can I help you with your mortgage today?";
+  return (
+    text ||
+    "I’m here and listening. How can I help you with your mortgage today?"
+  );
 }
 
 // ------------------------------------------------------------
@@ -80,7 +84,7 @@ async function getLivReply(userText, channel) {
 // ------------------------------------------------------------
 async function synthesizeSpeechToUrl(text) {
   if (!ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID) {
-    // Fallback: let Twilio <Say> handle it if ElevenLabs isn’t configured
+    console.warn("[ElevenLabs] Missing API key or voice ID, falling back to Twilio TTS.");
     return null;
   }
 
@@ -134,7 +138,7 @@ app.post("/sms", async (req, res) => {
   const incomingBody = (req.body.Body || "").trim();
   const from = req.body.From || "Unknown";
 
-  console.log("SMS from", from, ":", incomingBody);
+  console.log("[SMS] From", from, ":", incomingBody);
 
   const twiml = new MessagingResponse();
 
@@ -143,7 +147,9 @@ app.post("/sms", async (req, res) => {
     twiml.message(livReply);
   } catch (err) {
     console.error("Error handling SMS:", err);
-    twiml.message("I’m having trouble responding right now, but I’ll be back shortly.");
+    twiml.message(
+      "I’m having trouble responding right now, but I’ll be back shortly."
+    );
   }
 
   res.type("text/xml");
@@ -151,18 +157,13 @@ app.post("/sms", async (req, res) => {
 });
 
 // ------------------------------------------------------------
-// Voice: initial entry point
-// Twilio webhook URL: POST /voice
-// Uses ElevenLabs for the greeting so you only hear one voice.
+// Voice: initial entry point (/voice)
 // ------------------------------------------------------------
-app.post("/voice", async (req, res) => {
+app.post("/voice", (req, res) => {
   const from = req.body.From || "Unknown";
-  console.log("Incoming voice call from", from);
+  console.log("[VOICE] Incoming call from", from);
 
   const twiml = new VoiceResponse();
-
-  const greetingText =
-    "Hi, this is Liv with Official Mortgage. How can I help you today — buy a home, refinance, or pull cash out of your equity?";
 
   const gather = twiml.gather({
     input: "speech",
@@ -171,29 +172,16 @@ app.post("/voice", async (req, res) => {
     speechTimeout: "auto"
   });
 
-  try {
-    const audioUrl = await synthesizeSpeechToUrl(greetingText);
+  // Single Twilio greeting, then we switch to ElevenLabs
+  gather.say(
+    {
+      voice: "Polly.Joanna"
+    },
+    "Hi, this is Liv with Official Mortgage. How can I help you today: buy a home, refinance, or pull cash out of your equity?"
+  );
 
-    if (audioUrl) {
-      gather.play(audioUrl);
-    } else {
-      // Fallback: Twilio TTS only if ElevenLabs is unavailable
-      gather.say(
-        {
-          voice: "Polly.Joanna"
-        },
-        greetingText
-      );
-    }
-  } catch (err) {
-    console.error("Error getting ElevenLabs greeting:", err);
-    gather.say(
-      {
-        voice: "Polly.Joanna"
-      },
-      greetingText
-    );
-  }
+  // If Gather times out, send them to a polite goodbye
+  twiml.redirect("/voice/fallback");
 
   res.type("text/xml");
   res.send(twiml.toString());
@@ -204,7 +192,12 @@ app.post("/voice", async (req, res) => {
 // ------------------------------------------------------------
 app.post("/voice/fallback", (_req, res) => {
   const twiml = new VoiceResponse();
-  twiml.say("I didn’t catch anything. Please call back if you still need help. Goodbye.");
+  twiml.say(
+    {
+      voice: "Polly.Joanna"
+    },
+    "I didn’t catch anything that time. Please call back if you still need help. Goodbye."
+  );
   twiml.hangup();
   res.type("text/xml");
   res.send(twiml.toString());
@@ -212,51 +205,77 @@ app.post("/voice/fallback", (_req, res) => {
 
 // ------------------------------------------------------------
 // Voice: handle caller's speech, call GPT-5.1, play ElevenLabs audio
-// Only ElevenLabs is used for the reply when possible.
 // ------------------------------------------------------------
 app.post("/voice/handle", async (req, res) => {
   const speechResult = (req.body.SpeechResult || "").trim();
   const from = req.body.From || "Unknown";
 
-  console.log("Speech from", from, ":", speechResult);
+  console.log("[VOICE] Speech from", from, ":", speechResult);
 
   const twiml = new VoiceResponse();
 
   if (!speechResult) {
-    // No speech heard, send them back through the greeting flow once
-    twiml.redirect("/voice");
-    res.type("text/xml");
-    return res.send(twiml.toString());
-  }
-
-  try {
-    const livReply = await getLivReply(speechResult, "VOICE");
-    console.log("Liv reply:", livReply);
-
-    // Gather for the next turn and play ElevenLabs inside the gather,
-    // so there is only one voice.
     const gather = twiml.gather({
       input: "speech",
       action: "/voice/handle",
       method: "POST",
       speechTimeout: "auto"
     });
+    gather.say(
+      {
+        voice: "Polly.Joanna"
+      },
+      "I didn’t hear anything. Tell me briefly what you’re trying to do today."
+    );
 
+    res.type("text/xml");
+    return res.send(twiml.toString());
+  }
+
+  try {
+    const livReply = await getLivReply(speechResult, "VOICE");
+    console.log("[VOICE] Liv reply:", livReply);
+
+    // Try ElevenLabs first
     const audioUrl = await synthesizeSpeechToUrl(livReply);
 
     if (audioUrl) {
-      gather.play(audioUrl);
+      twiml.play(audioUrl);
     } else {
       // Fallback to Twilio TTS if ElevenLabs unavailable
-      gather.say(livReply);
+      twiml.say(
+        {
+          voice: "Polly.Joanna"
+        },
+        livReply
+      );
     }
+
+    // Gather again for continued conversation
+    const gather = twiml.gather({
+      input: "speech",
+      action: "/voice/handle",
+      method: "POST",
+      speechTimeout: "auto"
+    });
+    gather.say(
+      {
+        voice: "Polly.Joanna"
+      },
+      "You can ask another question, or tell me what you see on your screen."
+    );
 
     res.type("text/xml");
     res.send(twiml.toString());
   } catch (err) {
     console.error("Error handling voice:", err);
 
-    twiml.say("I’m having trouble thinking right now. Please try again in a few minutes.");
+    twiml.say(
+      {
+        voice: "Polly.Joanna"
+      },
+      "I’m having trouble thinking right now. Please try again in a few minutes."
+    );
     twiml.hangup();
     res.type("text/xml");
     res.send(twiml.toString());
